@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+py7zr>=0.21
+pyinstaller>=6.3

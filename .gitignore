@@ -1,0 +1,10 @@
+.venv/
+data/
+bin/
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
+.pytest_cache/
+.ruff_cache/

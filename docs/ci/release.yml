@@ -1,0 +1,62 @@
+name: Setup.exe derle ve yayınla
+
+# v1.2.3 gibi bir etiket gönderildiğinde: testler → paketleme → kurulum sihirbazı → GitHub Release.
+# Actions sekmesinden elle de çalıştırılabilir (o zaman yalnızca artifact olarak yüklenir).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Bağımlılıklar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest py7zr pyinstaller
+
+      - name: Testler
+        run: python -m pytest -q
+
+      - name: Sürüm etiketle uyumlu mu?
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $ver = (Select-String -Path akis/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          if ($tag -ne $ver) { throw "Etiket ($tag) ile akis/__init__.py sürümü ($ver) farklı" }
+
+      - name: Kurulum dosyasını derle
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python tools/build_installer.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AkisIPTV-Setup
+          path: dist/AkisIPTV-Setup-*.exe
+          if-no-files-found: error
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AkisIPTV-Setup-*.exe
+          generate_release_notes: true
+          body: |
+            ## Kurulum
+            1. Aşağıdaki **AkisIPTV-Setup-x.y.z.exe** dosyasını indir (Python gerekmez).
+            2. Çift tıkla → sihirbazı takip et. Yönetici izni istemez.
+            3. Windows "bilgisayarınız korundu" derse: **Ek bilgi → Yine de çalıştır** (imzasız uygulamalarda normal).
