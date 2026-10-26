@@ -23,7 +23,11 @@ HDR = {"User-Agent": "AkisIPTV-setup", "Accept": "application/vnd.github+json"}
 
 
 def http_json(url: str):
-    req = urllib.request.Request(url, headers=HDR)
+    headers = dict(HDR)
+    token = os.environ.get("GITHUB_TOKEN")   # CI'da API hız limitine takılmamak için
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
 
