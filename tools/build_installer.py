@@ -78,6 +78,35 @@ VSVersionInfo(
     return p
 
 
+def stop_running_build(out: Path) -> None:
+    """dist\\AkisIPTV içinden açılmış eski bir kopya çalışıyorsa dosyaları kilitler; onu kapatır."""
+    if os.name != "nt" or not out.exists():
+        return
+    prefix = str(out).replace("'", "''") + "\\"
+    ps = ("Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith("
+          f"'{prefix}', [System.StringComparison]::OrdinalIgnoreCase) }} | "
+          "ForEach-Object { $_.Id; Stop-Process -Id $_.Id -Force }")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, text=True, check=False)
+    ids = r.stdout.split()
+    if ids:
+        print(f"dist klasöründen çalışan eski Akış IPTV kapatıldı (PID {', '.join(ids)})")
+        time.sleep(1.5)
+
+
+def remove_tree(path: Path) -> None:
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as e:
+            if attempt == 4:
+                sys.exit(f"{path} silinemedi ({e}).\nAkış IPTV ya da bu klasörde açık bir pencere varsa kapatıp tekrar dene.")
+            time.sleep(1.5)
+
+
 def pyinstaller(ver: str, dll: Path) -> Path:
     step("Uygulama paketleniyor (PyInstaller)")
     try:
@@ -85,8 +114,8 @@ def pyinstaller(ver: str, dll: Path) -> Path:
     except ImportError:
         run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q", "pyinstaller"])
     out = DIST / "AkisIPTV"
-    if out.exists():
-        shutil.rmtree(out)
+    stop_running_build(out)
+    remove_tree(out)
     sep = os.pathsep
     cmd = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",

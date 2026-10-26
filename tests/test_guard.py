@@ -193,5 +193,51 @@ class GuardTests(unittest.TestCase):
         self.assertIn("Veri gelmiyor", acts[-1].message)
 
 
+    def test_401_rotates_user_agent_and_learns_working_one(self):
+        acts = self.g.start(self.t, True, ["ts", "m3u8"], ua_count=4)
+        self.g.mark_loading(self.t)
+        self.g.on_idle(self.t + 0.1, False)
+        self.g.on_http_error(401)
+        acts = self.g.on_error(self.t + 0.2, "Yayın açılamadı")
+        self.assertIn("switch_ua", kinds(acts))
+        self.assertEqual(self.g.ua_index, 1)
+        self.assertEqual(self.g.retries, 0)            # kimlik denemesi hak yemez
+        acts = self.g.tick(self.t + 1)
+        self.assertEqual(acts[0].kind, "reload")
+        self.assertEqual(acts[0].fmt, "ts")            # format değişmez, sadece kimlik
+        self.g.mark_loading(self.t + 1)
+        self.g.on_idle(self.t + 1.1, False)
+        acts = self.g.on_progress(self.t + 2, 0.0)
+        self.assertIn("ua_ok", kinds(acts))
+        self.assertEqual([a.level for a in acts if a.kind == "ua_ok"], [1])
+
+    def test_401_with_all_user_agents_failing_gives_up(self):
+        self.g.start(self.t, True, ["ts", "m3u8"], ua_count=3)
+        now = self.t
+        gave_up = None
+        for _ in range(12):
+            self.g.mark_loading(now)
+            self.g.on_idle(now + 0.1, False)
+            self.g.on_http_error(401)
+            acts = self.g.on_error(now + 0.2, "Yayın açılamadı")
+            if "give_up" in kinds(acts):
+                gave_up = acts[-1].message
+                break
+            now += 5
+            self.g.tick(now)
+        self.assertIsNotNone(gave_up)
+        self.assertIn("401", gave_up)
+        self.assertEqual(self.g.ua_index, 2)
+
+    def test_single_403_waits_instead_of_rotating(self):
+        self.g.start(self.t, True, ["ts"], ua_count=3)
+        self.g.mark_loading(self.t)
+        self.g.on_idle(self.t + 0.1, False)
+        self.g.on_http_error(403)
+        acts = self.g.on_error(self.t + 0.2, "Yayın açılamadı")
+        self.assertNotIn("switch_ua", kinds(acts))     # önce bağlantı limiti varsayılır
+        self.assertGreaterEqual(self.g.reconnect_at - (self.t + 0.2), 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

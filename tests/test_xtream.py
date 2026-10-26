@@ -124,6 +124,32 @@ class MockServerTests(unittest.TestCase):
         self.assertIn("ts", acc.allowed_formats)
         self.assertNotEqual(acc.expiry_text, "Sınırsız")
 
+    def test_auth_adopts_server_case(self):
+        # API "DEMO"yu kabul eder ama yayın sunucusu birebir "demo" ister
+        c = self.client(pw="DEMO")
+        self.assertEqual(requests.get(c.live_url(1, "m3u8"), timeout=5).status_code, 401)
+        acc = c.authenticate()
+        self.assertTrue(c.credentials_fixed)
+        self.assertEqual(c.password, "demo")
+        self.assertIn("parola", acc.cred_note)
+        self.assertEqual(requests.get(c.live_url(1, "m3u8"), timeout=5).status_code, 200)
+        ok = self.client()
+        ok.authenticate()
+        self.assertFalse(ok.credentials_fixed)
+        self.assertEqual(ok.account.cred_note, "")
+
+    def test_adopt_only_equivalent_credentials(self):
+        c = XtreamClient("srv.tv", "Ali", "Şifre1")
+        note = c._adopt_server_credentials({"username": "ali", "password": "sifre1 "})
+        self.assertEqual((c.username, c.password), ("ali", "sifre1"))
+        self.assertIn("parola", note)
+        c2 = XtreamClient("srv.tv", "ali", "gizli")
+        note2 = c2._adopt_server_credentials({"username": "ali", "password": "********"})
+        self.assertEqual(c2.password, "gizli")
+        self.assertIn("değiştirilmedi", note2)
+        self.assertFalse(c2.credentials_fixed)
+        self.assertEqual(c2._adopt_server_credentials({"username": "", "password": None}), "")
+
     def test_auth_wrong_password(self):
         with self.assertRaises(AuthError):
             self.client(pw="yanlis").authenticate()
@@ -183,6 +209,10 @@ class MockServerTests(unittest.TestCase):
         self.assertIn("#EXTM3U", r.text)
         r = requests.get(c.live_url(9003, "ts"), timeout=5)
         self.assertEqual(r.status_code, 404)
+        r = requests.get(c.live_url(9007, "m3u8"), timeout=5)
+        self.assertEqual(r.status_code, 401)
+        r = requests.get(c.live_url(9007, "m3u8"), headers={"User-Agent": "okhttp/4.12.0"}, timeout=5)
+        self.assertEqual(r.status_code, 200)
         r = requests.get(c.vod_url(5000, "mp4"), headers={"Range": "bytes=0-99"}, timeout=5)
         self.assertEqual(r.status_code, 206)
         self.assertEqual(len(r.content), 100)

@@ -114,7 +114,10 @@ def main() -> int:
     code = app.exec()
     shutdown_pools()
     log.info("Çıkış (kod %s)", code)
-    return code
+    # Ayarlar pencere kapanırken kaydedildi. Uzun süren bir arka plan indirmesi (ör. dev XMLTV) ya da
+    # cevap vermeyen bir sunucu isteği yüzünden süreç arkada asılı kalmasın: hemen çık.
+    logging.shutdown()
+    os._exit(code)
 
 
 if __name__ == "__main__":

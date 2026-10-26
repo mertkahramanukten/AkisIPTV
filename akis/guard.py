@@ -11,7 +11,9 @@ denetleyiciye (PlayerController) ne yapması gerektiğini söyler:
 * Sık takılma             → buffer seviyesini otomatik yükselt (adaptif buffer)
 * Aynı formatta tekrar hata → TS ↔ HLS (m3u8) arasında otomatik geçiş
 * HTTP 403/458/509        → bağlantı limiti dolu olabilir, daha uzun bekle
-* HTTP 404/401            → kanal yayında değil; boşuna zorlamadan vazgeç
+* HTTP 401 (yetki yok)    → sunucu bu oynatıcıyı tanımıyor olabilir: farklı oynatıcı kimlikleri
+                            (User-Agent) sırayla denenir, çalışan bulunursa hatırlanır
+* HTTP 404                → kanal yayında değil; boşuna zorlamadan vazgeç
 """
 from __future__ import annotations
 
@@ -104,6 +106,10 @@ class StreamGuard:
         self.underruns: deque[float] = deque()
         self.stable_reported = False
         self.switched_from: str | None = None
+        self.ua_count = 1
+        self.ua_index = 0
+        self.ua_403 = 0            # bu kimlikle art arda gelen 403 sayısı
+        self.saw_401 = False
 
     @property
     def fmt(self) -> str:
@@ -121,8 +127,10 @@ class StreamGuard:
         self.t_state = now
 
     # ------------------------------------------------------------------ dış API
-    def start(self, now: float, is_live: bool, formats: list[str], start_pos: float = 0.0) -> list[Action]:
+    def start(self, now: float, is_live: bool, formats: list[str], start_pos: float = 0.0,
+              ua_count: int = 1) -> list[Action]:
         self._reset_stream(now)
+        self.ua_count = max(1, int(ua_count))
         self.is_live = is_live
         self.formats = list(dict.fromkeys(formats)) or ["ts"]
         self.start_pos = float(start_pos or 0.0)
@@ -177,6 +185,8 @@ class StreamGuard:
             if self.retries:
                 msg = f"Yeniden bağlandı ({FORMAT_NAMES.get(self.fmt, self.fmt)})"
             out.append(Action("status", message=msg))
+            if self.ua_index and self.saw_401:
+                out.append(Action("ua_ok", level=self.ua_index))
         if self.last_pos is None or abs(pos - self.last_pos) > 1e-3:
             self.last_pos = pos
             self.last_progress_t = now
@@ -274,9 +284,29 @@ class StreamGuard:
         self.seen_active = False
         out: list[Action] = [Action("stop")]
 
+        # Yetki hatası: önce farklı oynatıcı kimliği (User-Agent) dene.
+        # 403 bağlantı limitinden de gelebilir → aynı kimlikle ikinci kez 403 gelirse döndür.
+        if code == 401:
+            self.saw_401 = True
+        self.ua_403 = self.ua_403 + 1 if code == 403 else 0
+        if self.ua_index + 1 < self.ua_count and (code == 401 or self.ua_403 >= 2):
+            self.retries -= 1                 # kimlik denemeleri tekrar hakkından düşmez
+            self.ua_index += 1
+            self.fails_on_fmt = 0
+            self.ua_403 = 0
+            delay = 0.5 if code == 401 else self.cfg.limit_backoff
+            self.reconnect_at = now + delay
+            self._set(GState.WAITING, now)
+            reason = f"Sunucu yetki vermedi (HTTP {code})"
+            self.stats.last_reason = reason
+            out.append(Action("switch_ua", level=self.ua_index))
+            out.append(Action("status", message=f"{reason} → farklı oynatıcı kimliği deneniyor "
+                                                f"({self.ua_index}/{self.ua_count - 1})"))
+            return out
+
         if code in (401, 404, 410):
             # yayın yok / yetki yok: birkaç denemeden sonra pes et
-            reason = "Kanal yayında değil (HTTP %d)" % code if code != 401 else "Yetki reddedildi (HTTP 401)"
+            reason = "Kanal yayında değil (HTTP %d)" % code if code != 401 else "Sunucu yetki vermedi (HTTP 401)"
             if self.retries >= 2 and not (self.is_live and self.fmt_index == 0 and len(self.formats) > 1):
                 self._set(GState.FAILED, now)
                 self.stats.last_reason = reason
@@ -289,8 +319,8 @@ class StreamGuard:
 
         extra = ""
         if self.is_live and len(self.formats) > 1 and (self.fails_on_fmt >= self.cfg.format_switch_after
-                                                       or code in (404, 410)):
-            if code not in (404, 410):    # 404 kanala özeldir, formatı suçlama
+                                                       or code in (401, 404, 410)):
+            if code not in (401, 404, 410):    # 404 kanala özeldir, formatı suçlama
                 self.switched_from = self.fmt
             self.fmt_index = (self.fmt_index + 1) % len(self.formats)
             self.fails_on_fmt = 0

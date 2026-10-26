@@ -231,7 +231,9 @@ class LoginDialog(QDialog):
         self._set_busy(False)
         self.client = client
         self.account = account
-        self.profile = self.settings.upsert_profile(self.name_edit.text().strip(), server, user, pw)
+        # Sunucu parolayı farklı harf büyüklüğüyle tutuyorsa (bkz. XtreamClient._adopt_server_credentials)
+        # profili düzeltilmiş haliyle kaydet; kullanıcı adı profil kimliğinde olduğu için yazıldığı gibi kalır.
+        self.profile = self.settings.upsert_profile(self.name_edit.text().strip(), server, user, client.password)
         self.accept()
 
     def _fail(self, msg: str) -> None:

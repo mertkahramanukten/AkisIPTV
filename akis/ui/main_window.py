@@ -80,7 +80,12 @@ class MainWindow(QMainWindow):
         self.lib.epg_ready.connect(self._on_epg_ready)
 
         self._restore_window()
+        self._log_account()
         self.switch_mode("live")
+        if getattr(self.client, "credentials_fixed", False):
+            QTimer.singleShot(4000, lambda: self._status(
+                "Parolan sunucudaki kayıtla harfi harfine aynı değildi (büyük/küçük harf); yayınlar için "
+                "düzeltildi ve kaydedildi", "ok"))
         QTimer.singleShot(5000, self._preload_others)
 
     # ================================================================== arayüz
@@ -297,6 +302,8 @@ class MainWindow(QMainWindow):
         self.surface.key.connect(self._on_mpv_key)
         p.resume_point.connect(self._on_resume_point)
         p.format_feedback.connect(self._on_format_feedback)
+        p.ua_learned.connect(self._on_ua_learned)
+        p.preferred_ua = self.store.get("stream_ua") or None
         b = self.bar
         b.play_pause.connect(self.toggle_pause)
         b.seek_rel.connect(p.seek)
@@ -835,6 +842,43 @@ class MainWindow(QMainWindow):
 
     def _on_gave_up(self, pi: PlayItem, msg: str) -> None:
         self._status(f"{pi.title}: {msg}  (F5 ile tekrar dene)", "error")
+        if "401" in msg or "403" in msg:
+            # Yetki hatası: hesabın o anki durumunu sunucudan tekrar sorup sebebi daralt
+            run_async(self.client.authenticate, on_done=lambda acc, t=pi.title: self._diagnose_auth(t, acc),
+                      on_error=lambda m: self._status(f"Yetki hatası; hesap bilgisi de alınamadı: {m}", "error"))
+
+    def _diagnose_auth(self, title: str, acc: Account) -> None:
+        self.account = acc
+        self._log_account()
+        if acc.cred_note and "değiştirilmedi" in acc.cred_note:
+            why = ("Sunucunun kayıtlı parolası girdiğin paroladan farklı görünüyor. Sağlayıcının panelindeki "
+                   "M3U linkinden parolayı kontrol edip (büyük/küçük harf dahil) aynen gir.")
+        elif acc.max_connections and acc.active_cons >= acc.max_connections:
+            why = (f"Hesabın şu an başka bir cihazda açık görünüyor (aktif bağlantı {acc.active_cons}/"
+                   f"{acc.max_connections}). Diğer cihazdaki yayını kapatıp F5'e bas.")
+        else:
+            why = ("Hesap aktif ve boşta görünüyor; sunucu bu oynatıcıyı yayına yetkilendirmiyor. Sağlayıcı "
+                   "üçüncü parti uygulamaları, IP ya da cihazı kısıtlıyor olabilir. Kanal üstünde sağ tık → "
+                   "\"Yayın adresini kopyala\" ile VLC'de dene: VLC'de de açılmıyorsa sorun sağlayıcı tarafında.")
+        log.warning("Yetki teşhisi (%s): %s", title, why)
+        self._status(why, "error")
+        self.player.osd(why, 9000)
+
+    def _on_ua_learned(self, ua: str) -> None:
+        if self.store.get("stream_ua") != ua:
+            self.store["stream_ua"] = ua
+            self._dirty = True
+            self._save_if_dirty()
+            log.info("Bu sunucu için çalışan oynatıcı kimliği kaydedildi: %s", ua)
+            self._status("Sunucunun kabul ettiği oynatıcı kimliği bulundu ve kaydedildi", "ok")
+
+    def _log_account(self) -> None:
+        a = self.account
+        si = (a.raw or {}).get("server_info") or {}
+        log.info("Hesap: durum=%s, bitiş=%s, deneme=%s, bağlantı=%s/%s, formatlar=%s, "
+                 "server_info=%s://%s:%s (https:%s)", a.status, a.expiry_text, a.is_trial, a.active_cons,
+                 a.max_connections, ",".join(a.allowed_formats), si.get("server_protocol"), si.get("url"),
+                 si.get("port"), si.get("https_port"))
 
     # ================================================================== kontroller
     def toggle_pause(self) -> None:
@@ -1132,8 +1176,13 @@ class MainWindow(QMainWindow):
             self.lib.clear_cache()
             self._status("Önbellek temizlendi; listeler yeniden indirilecek", "info")
 
+        old_ua = self.settings.get("user_agent")
         dlg = SettingsDialog(self.settings, self.account, on_clear_cache=clear, parent=self)
         if dlg.exec():
+            if self.settings.get("user_agent") != old_ua:
+                # elle seçilen kimlik, otomatik öğrenilenin önüne geçsin
+                self.store["stream_ua"] = None
+                self.player.preferred_ua = None
             self.player.apply_settings()
             ua = self.settings.get("user_agent")
             self.client.user_agent = ua

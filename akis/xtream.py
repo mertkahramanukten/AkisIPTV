@@ -171,6 +171,7 @@ class Account:
     allowed_formats: list[str] = field(default_factory=lambda: ["ts", "m3u8"])
     server_timezone: str = ""
     raw: dict = field(default_factory=dict)
+    cred_note: str = ""          # sunucudaki kullanıcı adı/parola yazılandan farklıysa açıklama
 
     @property
     def expiry_text(self) -> str:
@@ -188,6 +189,7 @@ class XtreamClient:
         self.user_agent = user_agent or DEFAULT_UA
         self.timeout = timeout
         self.account: Account | None = None
+        self.credentials_fixed = False
         self.session = self._make_session()
 
     def _make_session(self) -> requests.Session:
@@ -297,7 +299,33 @@ class XtreamClient:
             server_timezone=str(si.get("timezone") or ""),
             raw=data,
         )
+        self.account.cred_note = self._adopt_server_credentials(ui)
         return self.account
+
+    def _adopt_server_credentials(self, ui: dict) -> str:
+        """Sunucunun kayıtlı kullanıcı adı/parolasını yayın adresleri için benimser.
+
+        Birçok panel player_api.php girişinde bilgileri veritabanında büyük/küçük harf ve aksan
+        DUYARSIZ karşılaştırır (MySQL *_general_ci), yayın sunucusu ise birebir eşleşme ister.
+        Sonuç: kanal listesi gelir ama her kanal HTTP 401 verir. Yanıttaki user_info, girişin kabul
+        edildiği hesabın gerçek bilgilerini taşır; yazılanla "aynı" ise (harf büyüklüğü / Türkçe
+        karakter / baştaki-sondaki boşluk farkı) sunucudaki hali kullanılır.
+        """
+        notes = []
+        for attr, label in (("username", "kullanıcı adı"), ("password", "parola")):
+            srv = ui.get(attr)
+            mine = getattr(self, attr)
+            if not isinstance(srv, str) or not srv.strip() or srv == mine:
+                continue
+            if search_key(srv.strip()) == search_key(mine.strip()):
+                setattr(self, attr, srv.strip())
+                self.credentials_fixed = True
+                notes.append(f"{label} sunucuda farklı harf büyüklüğüyle kayıtlı; sunucudaki hali kullanılıyor")
+            else:
+                notes.append(f"sunucunun bildirdiği {label} yazılandan farklı (değiştirilmedi)")
+        for n in notes:
+            log.warning("Hesap bilgisi: %s", n)
+        return "; ".join(notes)
 
     # ---- katalog
     def live_categories(self):

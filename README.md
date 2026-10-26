@@ -35,6 +35,7 @@ Ayarlar ve kayıtlı profiller `%APPDATA%\AkisIPTV` içinde tutulur. Kaldırırk
 | `demo.bat` | Sahte Xtream sunucusuyla başlatır |
 | `mock_server.bat` | Sadece sahte sunucuyu açar (kurulu uygulamayı denemek için: `http://127.0.0.1:8899`, demo/demo) |
 | `test.bat` | Testleri çalıştırır |
+| `teshis.bat` | Kanallar açılmıyorsa: kayıtlı profille sağlayıcıya deneme istekleri atar, `teshis_raporu.txt` yazar (kullanıcı adı/parola maskelenir) |
 | `build_installer.bat` | **Tek dosyalık kurulum** üretir: `dist\AkisIPTV-Setup-x.y.z.exe` |
 
 ### Yeni sürüm yayınlama
@@ -61,7 +62,8 @@ IPTV'de takılmanın 5 yaygın sebebi var; her birine ayrı bir katman bakıyor:
 | Format uyumsuzluğu | Kanal hiç açılmıyor ya da sürekli kopuyor | **TS ↔ HLS otomatik geçiş**: aynı formatta 2 hata → diğer formatı dener. Hangisinin daha stabil olduğunu öğrenir ve sonraki açılışlarda onunla başlar |
 | **Bağlantı limiti** (1 ekranlı hesaplar) | Kanal değiştirince "açılmıyor", birkaç denemede açılıyor | Kanal değişirken önce eski bağlantı kapatılır, sunucuya 350 ms nefes payı verilir, sonra yenisi açılır. Hızlı zaplamada sadece son seçilen kanal açılır. 403/509 hatasında daha uzun beklenir |
 | CPU kaynaklı kasma | Ses akıyor ama görüntü kasıyor | Donanımsal çözme (GPU, `hwdec=auto-safe`) |
-| Sağlayıcının uygulama engeli | Hiçbir kanal açılmıyor, VLC'de açılıyor | User-Agent varsayılan olarak VLC; Ayarlar'dan değiştirilebilir |
+| Parolada harf büyüklüğü farkı | Kanal listesi geliyor ama **her** kanal **HTTP 401** veriyor | Birçok panel girişte parolayı büyük/küçük harf duyarsız kontrol eder, yayın sunucusu ise birebir ister. Akış girişte sunucunun kayıtlı halini okur ve yayın adreslerinde onu kullanır (profile de düzeltilmiş hali kaydedilir) |
+| Sağlayıcının uygulama engeli | Kanal listesi geliyor ama yayın **HTTP 401** veriyor | 401 alınca 7 farklı oynatıcı kimliği (User-Agent) sırayla denenir; çalışan bulunursa o profil için hatırlanır. Hiçbiri olmazsa hesabın anlık bağlantı durumu sorgulanıp sebep söylenir (başka cihazda açık mı, sağlayıcı kısıtı mı) |
 
 Ayrıca:
 - **Yayın sağlığı paneli** (`I` tuşu): buffer süresi, indirme hızı, bitrate, çözünürlük, kopma/takılma sayısı canlı olarak video üzerinde.
@@ -75,7 +77,8 @@ Ayrıca:
 3. `I` ile sağlık panelini aç: *İndirme hızı* video bitrate'inin altındaysa sorun hattında ya da sağlayıcıda; uygulama tarafında yapılabilecek tek şey buffer'ı büyütmek.
 4. Wi-Fi yerine kablo dene.
 5. Kanallar hiç açılmıyorsa Ayarlar'dan farklı bir **User-Agent** seç.
-6. Log dosyası: `%APPDATA%\AkisIPTV\logs\akis.log` (kaynak koddan çalışırken `data\logs\akis.log`). Parola ve kullanıcı adı loglara yazılmaz.
+6. Kanallar hiç açılmıyorsa `teshis.bat` çalıştır; `teshis_raporu.txt` sebebi (parola, format, kimlik, yönlendirme) gösterir.
+7. Log dosyası: `%APPDATA%\AkisIPTV\logs\akis.log` (kaynak koddan çalışırken `data\logs\akis.log`). Parola ve kullanıcı adı loglara yazılmaz.
 
 ---
 
@@ -137,6 +140,7 @@ github_yayinla.bat       Kodu GitHub'a gönderir ve sürüm sayfasını açar
 | 9004 | İlk byte 6 sn sonra gelir | Sabırla açılır |
 | 9005 | TS 404, HLS çalışır | Otomatik HLS'e geçer |
 | 9006 | Yayın hızının altında veri | Takılmalar → buffer otomatik büyür |
+| 9007 | Sadece belirli uygulamaya yayın verir (diğerlerine 401) | Farklı oynatıcı kimlikleri denenir, çalışan bulunup hatırlanır |
 
 Sahte sunucu varsayılan olarak **1 bağlantı limitiyle** çalışır; hızlı kanal değiştirmenin limiti aşmadığını da test eder.
 Tek başına: `.venv\Scripts\python tests\mock_server.py --channels 20000` (büyük liste performansı için).

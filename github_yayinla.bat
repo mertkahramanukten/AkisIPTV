@@ -4,7 +4,14 @@ cd /d "%~dp0"
 title Akis IPTV - GitHub'a gonder
 set "OWNER=mertkahramanukten"
 set "REPO=AkisIPTV"
-set "VER=1.0.0"
+set "VER="
+if exist ".venv\Scripts\python.exe" for /f "usebackq delims=" %%v in (`.venv\Scripts\python.exe -c "import akis;print(akis.__version__)"`) do set "VER=%%v"
+if not defined VER (
+  echo [HATA] Surum okunamadi. Once setup.bat calistir.
+  pause
+  exit /b 1
+)
+echo Surum: %VER%
 set "URL=https://github.com/%OWNER%/%REPO%.git"
 echo ==============================================
 echo   Akis IPTV - GitHub'a gonderiliyor
@@ -25,7 +32,7 @@ if errorlevel 1 git config user.email "mertkahramanukten@gmail.com"
 git add -A
 git diff --cached --quiet
 if not errorlevel 1 goto :remote
-> ".git\AKIS_MSG.txt" echo Akis IPTV %VER% guncellemesi
+> ".git\AKIS_MSG.txt" echo Akis IPTV %VER%
 >> ".git\AKIS_MSG.txt" echo.
 >> ".git\AKIS_MSG.txt" echo Co-Authored-By: Claude Opus 5.5 ^<noreply@anthropic.com^>
 >> ".git\AKIS_MSG.txt" echo Claude-Session: https://claude.ai/code/session_01SoqP8zVr8soMd7HCYRnEa1

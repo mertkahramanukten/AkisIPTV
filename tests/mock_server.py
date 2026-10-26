@@ -12,6 +12,10 @@ Sadece standart kütüphane kullanır.
     9004  Yavaş açılan       — ilk byte 6 sn sonra gelir
     9005  Sadece HLS         — .ts 404 verir, .m3u8 çalışır
     9006  Kekeleyen          — yayın hızının altında veri gönderir (buffer erir)
+    9007  Kimlik kilitli     — yalnızca "okhttp" User-Agent'ına yayın verir, diğerlerine 401
+
+API girişi büyük/küçük harf duyarsızdır, yayınlar değildir (gerçek panellerdeki gibi): "DEMO" parolasıyla
+giriş yapılır ama uygulama sunucunun bildirdiği "demo" halini kullanmazsa her kanal 401 verir.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ SPECIAL = {
     9004: "⚠ Yavaş Açılan (6 sn)",
     9005: "⚠ Sadece HLS (TS 404)",
     9006: "⚠ Kekeleyen Kanal",
+    9007: "⚠ Kimlik Kilitli (401)",
 }
 
 
@@ -181,7 +186,9 @@ class Handler(BaseHTTPRequestHandler):
     # ---- API
     def api(self, q):
         st = STATE
-        if q.get("username") != USER or q.get("password") != PASS:
+        # Gerçek panellerdeki gibi: API girişi büyük/küçük harf duyarsız (MySQL *_general_ci),
+        # yayın adresleri ise birebir eşleşme ister → "DEMO" parolasıyla liste gelir, kanallar 401 verir.
+        if (q.get("username") or "").lower() != USER or (q.get("password") or "").lower() != PASS:
             return self._json({"user_info": {"auth": 0}})
         action = q.get("action")
         cat = q.get("category_id")
@@ -275,6 +282,8 @@ class Handler(BaseHTTPRequestHandler):
         st = STATE
         if sid not in {s["stream_id"] for s in st.live} or sid == 9003:
             return self._send(404, b"stream not found", "text/plain")
+        if sid == 9007 and "okhttp" not in (self.headers.get("User-Agent") or ""):
+            return self._send(401, b"unauthorized player", "text/plain")
         if ext == "m3u8":
             return self.hls_playlist(sid)
         if sid == 9005:

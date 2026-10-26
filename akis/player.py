@@ -134,6 +134,17 @@ class VideoSurface(QFrame):
         super().keyPressEvent(e)
 
 
+# HTTP 401 alınca sırayla denenecek oynatıcı kimlikleri (User-Agent). Birçok sağlayıcı yalnızca
+# tanıdığı uygulamalara yayın verir; çalışan kimlik bulununca profil için hatırlanır.
+UA_FALLBACKS = [
+    "IPTVSmartersPlayer",
+    "okhttp/4.12.0",
+    "Lavf/61.7.100",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+    "TiviMate/5.1.6 (Android 12)",
+    "Kodi/21.1 (Windows NT 10.0.22631; Win64; x64) App_Bitness/64 Version/21.1",
+]
+
 HTTP_RE = re.compile(r"(?:HTTP error|Server returned)\s+(\d{3})")
 
 
@@ -147,6 +158,7 @@ class PlayerController(QObject):
     resume_point = Signal(str, float, float)
     format_feedback = Signal(str, bool)
     buffer_changed = Signal(int)
+    ua_learned = Signal(str)               # 401 sonrası çalışan User-Agent
 
     _prop = Signal(str, object)
     _logsig = Signal(str, str, str)
@@ -167,6 +179,8 @@ class PlayerController(QObject):
         self._ffmpeg_reconnects = 0
         self._last_status = ""
         self._last_load_t = 0.0
+        self.preferred_ua: str | None = None   # profil için daha önce çalıştığı görülen kimlik
+        self.ua_list: list[str] = []
 
         opts = self._base_options()
         log.info("mpv seçenekleri: %s", {k: v for k, v in opts.items() if k != "user_agent"})
@@ -323,7 +337,11 @@ class PlayerController(QObject):
         self.guard.buffer_level = self.guard.base_level
         self._apply_buffer(self.guard.base_level)
         self._set("force-seekable", "yes" if item.is_live else "no")
-        self._run(self.guard.start(time.monotonic(), item.is_live, item.formats, item.start))
+        first = self.preferred_ua or self.settings.get("user_agent")
+        self.ua_list = list(dict.fromkeys([u for u in [first, self.settings.get("user_agent"), *UA_FALLBACKS] if u]))
+        self._set("user-agent", self.ua_list[0])
+        self._run(self.guard.start(time.monotonic(), item.is_live, item.formats, item.start,
+                                   ua_count=len(self.ua_list)))
         self.started.emit(item)
 
     def stop(self) -> None:
@@ -371,6 +389,15 @@ class PlayerController(QObject):
                     self.finished.emit(self.current)
             elif k in ("format_ok", "format_bad"):
                 self.format_feedback.emit(a.fmt or "", k == "format_ok")
+            elif k == "switch_ua":
+                if 0 <= a.level < len(self.ua_list):
+                    ua = self.ua_list[a.level]
+                    self._set("user-agent", ua)
+                    log.info("401 sonrası oynatıcı kimliği değiştirildi: %s", ua)
+            elif k == "ua_ok":
+                if 0 <= a.level < len(self.ua_list):
+                    self.preferred_ua = self.ua_list[a.level]
+                    self.ua_learned.emit(self.preferred_ua)
 
     def _emit_status(self, msg: str, level: str) -> None:
         if msg != self._last_status:
