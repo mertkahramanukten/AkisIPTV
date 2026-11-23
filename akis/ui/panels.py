@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QProgressBar, QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget)
 
@@ -399,6 +400,9 @@ class PlayerBar(QWidget):
     mute_clicked = Signal()
     menu_clicked = Signal()
     fullscreen_clicked = Signal()
+    layout_clicked = Signal()
+    pin_clicked = Signal()
+    prev_clicked = Signal()
 
     def __init__(self):
         super().__init__()
@@ -456,8 +460,32 @@ class PlayerBar(QWidget):
         self.vol.valueChanged.connect(self.volume_changed.emit)
         lay.addWidget(self.vol)
         tb("dots", "Ses, altyazı, görüntü (sağ tık)", self.menu_clicked.emit)
+        # önceki kanal: son karesi küçük resim olarak + adı; tıkla/Tab → geri dön
+        self.prev_btn = QToolButton()
+        self.prev_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.prev_btn.setIconSize(QSize(48, 27))
+        self.prev_btn.setMaximumWidth(220)
+        self.prev_btn.clicked.connect(self.prev_clicked.emit)
+        self.prev_btn.hide()
+        lay.addWidget(self.prev_btn)
+        self.layout_btn = tb("layout", "Görünüm: paneller, sinema modu, mini oynatıcı", self.layout_clicked.emit)
+        self.pin_btn = tb("pin", "Üstte tut — video tüm pencerelerin üzerinde (P)", self.pin_clicked.emit)
         tb("fullscreen", "Tam ekran (F)", self.fullscreen_clicked.emit)
         self.set_mode(True)
+
+    def set_prev(self, name: str | None, pixmap=None) -> None:
+        if not name:
+            self.prev_btn.hide()
+            return
+        short = name if len(name) <= 18 else name[:17] + "…"
+        self.prev_btn.setText(f" ⇄ {short}")
+        self.prev_btn.setIcon(QIcon(pixmap) if pixmap is not None and not pixmap.isNull() else QIcon())
+        self.prev_btn.setToolTip(f"Önceki kanala dön: {name}  (Tab / Geri)")
+        self.prev_btn.show()
+
+    def set_pinned(self, on: bool) -> None:
+        self.pin_btn.setIcon(icon("pin_on" if on else "pin", C["accent"] if on else C["text"], 20))
+        self.pin_btn.setToolTip("Üstte tutmayı bırak (P)" if on else "Üstte tut — video tüm pencerelerin üzerinde (P)")
 
     def _released(self):
         self._dragging = False

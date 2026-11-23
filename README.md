@@ -82,13 +82,17 @@ Ayrıca:
 
 ---
 
+## Sürüm notları
+
+Ayrıntılar için [CHANGELOG.md](CHANGELOG.md).
+
 ## Kısayollar
 
 | Tuş | İşlev |
 |---|---|
 | Kanala tıkla | Oynat |
 | `F` / `F11` / çift tık | Tam ekran |
-| `Esc` | Tam ekrandan çık / aramayı temizle / otomatik sonraki bölümü iptal |
+| `Esc` | Tam ekrandan / mini oynatıcıdan çık / aramayı temizle / otomatik sonraki bölümü iptal |
 | `Boşluk` | Duraklat / devam |
 | `PgUp` / `PgDn` (videodayken `↑` / `↓`) | Önceki / sonraki kanal |
 | Rakamlar | Kanal numarasıyla geçiş (TV kumandası gibi) |
@@ -102,6 +106,14 @@ Ayrıca:
 | `F5` | Yeniden bağlan |
 | Video üzerinde sağ tık | Ses parçası, altyazı, görüntü oranı |
 | `Ctrl+F` | Ara (Türkçe karakter duyarsız: "sinema" → "SİNEMA") |
+| `T` | Sinema modu: pencerede yalnız video |
+| `Ctrl+B` / `Ctrl+J` | Sol panelleri / alt bilgi panelini aç-kapa |
+| `Ctrl+M` | Mini oynatıcı (köşede, her zaman üstte; çift tık ya da `Esc` ile geri) |
+| `P` | Üstte tut (pin): video tüm pencerelerin üzerinde |
+| `Tab` / `Backspace` | Önceki kanala dön (iki kanal arasında gidip gel) |
+| `N` | Nöbetçi kanal bildirimindeki kanalı aç |
+| Kanala sağ tık | Çoklu izlemeye ekle, nöbete al, son izlenenlerden kaldır |
+| "Son izlenenler"e sağ tık | Listeyi temizle (Ayarlar → İzleme geçmişini sil: hepsi) |
 
 ---
 
@@ -119,6 +131,7 @@ akis/
   config.py        Ayarlar, profiller, parola saklama (Windows DPAPI ile şifreli)
   workers.py       Arka plan işleri (arayüz hiç bloklanmaz)
   ui/              Pencereler, paneller, liste modelleri ve çizim
+  ui/multiview.py  Çoklu izleme ızgarası (bağlantı limitine göre ek kareler)
 tests/
   mock_server.py   Sahte Xtream sunucusu (sorunlu kanal senaryolarıyla)
   test_guard.py    StreamGuard senaryo testleri

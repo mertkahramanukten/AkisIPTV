@@ -54,6 +54,17 @@ def _draw(p: QPainter, name: str, s: float, color: QColor) -> None:
         for (x, y, dx, dy) in ((a, a, 1, 1), (c, a, -1, 1), (a, c, 1, -1), (c, c, -1, -1)):
             p.drawLine(QPointF(x, y), QPointF(x + dx * (b - a), y))
             p.drawLine(QPointF(x, y), QPointF(x, y + dy * (b - a)))
+    elif name in ("pin", "pin_on"):
+        # raptiye: baş + gövde + iğne
+        if name == "pin_on":
+            p.setBrush(fill)
+        p.drawPolygon(_poly([(0.36, 0.14), (0.64, 0.14), (0.6, 0.42), (0.74, 0.56), (0.26, 0.56), (0.4, 0.42)], s))
+        p.drawLine(QPointF(0.5 * s, 0.56 * s), QPointF(0.5 * s, 0.88 * s))
+    elif name == "layout":
+        # pencere düzeni: çerçeve + sol sütun + alt şerit
+        p.drawRoundedRect(QRectF(0.12 * s, 0.18 * s, 0.76 * s, 0.64 * s), 2, 2)
+        p.drawLine(QPointF(0.36 * s, 0.18 * s), QPointF(0.36 * s, 0.82 * s))
+        p.drawLine(QPointF(0.36 * s, 0.62 * s), QPointF(0.88 * s, 0.62 * s))
     elif name == "refresh":
         r = QRectF(0.2 * s, 0.2 * s, 0.6 * s, 0.6 * s)
         p.drawArc(r, 40 * 16, 290 * 16)

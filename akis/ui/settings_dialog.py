@@ -19,7 +19,7 @@ FORMAT_CHOICES = [
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, account=None, on_clear_cache=None, parent=None):
+    def __init__(self, settings: Settings, account=None, on_clear_cache=None, on_clear_history=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("Ayarlar")
@@ -99,6 +99,11 @@ class SettingsDialog(QDialog):
         if on_clear_cache:
             clr.clicked.connect(lambda: (on_clear_cache(), clr.setText("Temizlendi ✓"), clr.setEnabled(False)))
         row.addWidget(clr)
+        hist = QPushButton("İzleme geçmişini sil")
+        hist.setToolTip("Son izlenen kanal/film/dizi listelerini ve yarım kalan film kayıtlarını siler")
+        if on_clear_history:
+            hist.clicked.connect(lambda: on_clear_history() and (hist.setText("Silindi ✓"), hist.setEnabled(False)))
+        row.addWidget(hist)
         row.addStretch(1)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("Kaydet")

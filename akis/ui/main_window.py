@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import tempfile
 import time
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
-                               QListWidgetItem, QMainWindow, QMenu, QProgressBar, QPushButton, QSplitter,
+from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
+                               QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from ..config import Settings, project_root
@@ -19,6 +22,7 @@ from ..xtream import Account, XtreamClient
 from .icons import icon
 from .models import (CAT_ALL, CAT_FAV, CAT_RECENT, CAT_RESUME, ChannelDelegate, ItemListModel, ItemRole,
                      PosterDelegate)
+from .multiview import MultiView
 from .panels import LiveInfoPanel, PlayerBar, SeriesPanel, VodInfoPanel, WelcomePanel, fmt_time
 from .settings_dialog import SettingsDialog
 from .theme import C
@@ -59,7 +63,19 @@ class MainWindow(QMainWindow):
         self._num_buf = ""
         self._fullscreen = False
         self._was_maximized = False
-        self._saved_sizes = None
+        view = settings.get("view") or {}
+        self._side_on = bool(view.get("side", True))     # sol: kategoriler + liste
+        self._info_on = bool(view.get("info", True))     # alt: bilgi paneli
+        self._theater = bool(view.get("theater", False))   # pencere içinde yalnız video
+        self._pinned = False                                # her zaman üstte
+        self._mini = False                                  # küçük, köşede, üstte oynatıcı
+        self._mini_saved = None
+        self._split_mem = None
+        self._rsplit_mem = None
+        self._prev_live: dict | None = None                 # Tab ile dönülecek önceki kanal
+        self._watch_seen: dict[str, float] = {}             # nöbetçi kanal → son görülen program başlangıcı
+        self._alert_item: dict | None = None                # N ile açılacak son bildirim
+        self.store.setdefault("watch", [])
         self._dirty = False
         self._first_live = True
         self._panel_img: tuple[str, str] | None = None   # (url, hedef)
@@ -166,6 +182,8 @@ class MainWindow(QMainWindow):
         self.cats = QListWidget()
         self.cats.setObjectName("Categories")
         self.cats.currentItemChanged.connect(self._on_category)
+        self.cats.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.cats.customContextMenuRequested.connect(self._cat_menu)
         cl.addWidget(self.cats, 1)
         self.cat_panel.setMinimumWidth(170)
 
@@ -248,7 +266,9 @@ class MainWindow(QMainWindow):
         vb.setContentsMargins(0, 0, 0, 0)
         vb.setSpacing(0)
         self.surface = VideoSurface()
-        vb.addWidget(self.surface, 1)
+        self.video_grid = QWidget()
+        self.mv = MultiView(self.video_grid, self.surface, None, self.settings)
+        vb.addWidget(self.video_grid, 1)
         self.bar = PlayerBar()
         vb.addWidget(self.bar)
         self.right.addWidget(video_box)
@@ -314,6 +334,11 @@ class MainWindow(QMainWindow):
         b.mute_clicked.connect(self.toggle_mute)
         b.menu_clicked.connect(lambda: self.show_video_menu(QCursor.pos()))
         b.fullscreen_clicked.connect(self.toggle_fullscreen)
+        b.layout_clicked.connect(lambda: self._view_menu().exec(QCursor.pos()))
+        b.pin_clicked.connect(self.toggle_pin)
+        b.prev_clicked.connect(self.swap_prev)
+        self.mv.main_player = p
+        self.mv.promote.connect(lambda it: self.play_live(it))
         b.set_volume(int(self.settings.get("volume", 80)))
 
     def _build_shortcuts(self) -> None:
@@ -325,6 +350,13 @@ class MainWindow(QMainWindow):
 
         sc(["F11", "F"], self.toggle_fullscreen)
         sc("Escape", self.on_escape)
+        sc("P", self.toggle_pin)
+        sc(["Tab", "Backspace"], self.swap_prev)
+        sc("N", self._open_alert)
+        sc("T", self.toggle_theater)
+        sc("Ctrl+M", self.toggle_mini)
+        sc("Ctrl+B", self.toggle_side)
+        sc("Ctrl+J", self.toggle_info)
         sc("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll()))
         sc("Space", self.toggle_pause)
         sc("PgUp", lambda: self.channel_step(-1))
@@ -362,6 +394,10 @@ class MainWindow(QMainWindow):
         self._info_timer.setSingleShot(True)
         self._info_timer.setInterval(250)
         self._info_timer.timeout.connect(self._show_pending_info)
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(30000)
+        self._watch_timer.timeout.connect(self._watch_tick)
+        self._watch_timer.start()
 
     # ================================================================== mod / kategori
     def switch_mode(self, mode: str) -> None:
@@ -732,9 +768,11 @@ class MainWindow(QMainWindow):
         if (not force and cur and cur.is_live and cur.item_id == it["id"] and self.player.guard.active):
             return   # aynı kanala tekrar tıklama/çift tık: yayını boşuna yeniden başlatma
         self._cancel_next_episode()
-        fmts = self._live_formats()
-        urls = {f: self.client.live_url(it["id"], f) for f in fmts}
-        self.player.play(PlayItem("live", it["id"], it["name"], urls, fmts, meta={"item": it}))
+        if cur and cur.is_live and cur.item_id != it["id"]:
+            prev = (getattr(cur, "meta", None) or {}).get("item")
+            if prev:
+                self._remember_prev(prev)
+        self.player.play(self._live_play_item(it))
         model = self.models["live"]
         model.set_playing(it["id"])
         view_ids = {x["id"] for x in model.view}
@@ -749,6 +787,97 @@ class MainWindow(QMainWindow):
         cur, _ = self.epg.now_next(it.get("epg"), it["id"])
         num = f"{it['num']}  " if it.get("num") else ""
         self.player.osd(f"{num}{it['name']}" + (f"\nŞimdi: {cur.title}" if cur else ""), 2500)
+
+    def _live_play_item(self, it: dict) -> PlayItem:
+        fmts = self._live_formats()
+        urls = {f: self.client.live_url(it["id"], f) for f in fmts}
+        return PlayItem("live", it["id"], it["name"], urls, fmts, meta={"item": it})
+
+    # ------------------------------------------------------------------ önceki kanal (Tab)
+    def _remember_prev(self, prev: dict) -> None:
+        self._prev_live = prev
+        pix = None
+        try:
+            path = os.path.join(tempfile.gettempdir(), "akis_prev.png")
+            self.player._cmd("screenshot-to-file", path, "video")
+            pm = QPixmap(path)
+            if not pm.isNull():
+                pix = pm.scaled(96, 54, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception as e:
+            log.debug("Önceki kanal küçük resmi alınamadı: %s", e)
+        self.bar.set_prev(prev.get("name"), pix)
+
+    def swap_prev(self) -> None:
+        if self._prev_live:
+            self.play_live(self._prev_live)
+        else:
+            self.player.osd("Henüz önceki kanal yok", 1000)
+
+    # ------------------------------------------------------------------ çoklu izleme
+    def _mv_capacity(self) -> int:
+        return self.mv.capacity(self.account.max_connections)
+
+    def add_to_multiview(self, it: dict) -> None:
+        cap = self._mv_capacity()
+        if cap == 0:
+            QMessageBox.information(
+                self, "Çoklu izleme",
+                f"Paketin aynı anda {self.account.max_connections or 1} yayına izin veriyor.\n"
+                "Çoklu izleme için sağlayıcından en az 2 bağlantılı paket gerekir; "
+                "paket yükselince bu özellik kendiliğinden açılır.")
+            return
+        if self.mv.has(it["id"]) or (self.player.current and self.player.current.item_id == it["id"]):
+            self.player.osd("Bu kanal zaten açık", 1000)
+            return
+        if len(self.mv.tiles) >= cap:
+            self._status(f"Çoklu izleme dolu — paketin {cap + 1} bağlantıya izin veriyor", "warn")
+            return
+        self.mv.add(it, self._live_play_item(it), self.player.preferred_ua)
+        self._status(f"Çoklu izlemeye eklendi: {it['name']}  ({len(self.mv.tiles) + 1}/{cap + 1})", "ok")
+
+    # ------------------------------------------------------------------ nöbetçi kanal
+    def _toggle_watch(self, it: dict) -> None:
+        lst = self.store["watch"]
+        if it["id"] in lst:
+            lst.remove(it["id"])
+            self._watch_seen.pop(it["id"], None)
+            self._status(f"Nöbetten çıkarıldı: {it['name']}", "info")
+        else:
+            lst.append(it["id"])
+            cur, _ = self.epg.now_next(it.get("epg"), it["id"])
+            self._watch_seen[it["id"]] = cur.start if cur else 0.0
+            nxt = self.epg.now_next(it.get("epg"), it["id"])[1]
+            when = f" — sıradaki: {nxt.title} ({time.strftime('%H:%M', time.localtime(nxt.start))})" if nxt else ""
+            self._status(f"🔔 Nöbette: {it['name']}{when}", "ok")
+        self._dirty = True
+
+    def _watch_tick(self) -> None:
+        ids = self.store.get("watch") or []
+        if not ids:
+            return
+        items = {x["id"]: x for x in self.models["live"].all if x["id"] in ids}
+        playing = self.player.current.item_id if self.player.current else None
+        for wid in ids:
+            it = items.get(wid)
+            if not it:
+                continue
+            cur, _ = self.epg.now_next(it.get("epg"), wid)
+            if not cur:
+                continue
+            last = self._watch_seen.get(wid)
+            self._watch_seen[wid] = cur.start
+            if last is None or last == cur.start or wid == playing or self.mv.has(wid):
+                continue
+            self._alert_item = it
+            msg = f"🔔 {it['name']}: “{cur.title}” başladı"
+            self.player.osd(msg + "\nAçmak için N", 6000)
+            self._status(msg + " — açmak için N", "ok")
+            QApplication.alert(self, 0)
+
+    def _open_alert(self) -> None:
+        if self._alert_item:
+            it, self._alert_item = self._alert_item, None
+            self.play_live(it)
 
     def channel_step(self, delta: int) -> None:
         lst = self._zap_list or self.models["live"].view
@@ -905,32 +1034,188 @@ class MainWindow(QMainWindow):
         self.settings.data["show_stats"] = on
         self._dirty = True
 
+    # ================================================================== görünüm
+    def _apply_chrome(self) -> None:
+        """Panellerin görünürlüğünü mevcut duruma (tam ekran / mini / sinema / panel ayarları) göre kurar."""
+        fs = self._fullscreen
+        bare = fs or self._theater or self._mini
+        side = not bare and self._side_on
+        info = not bare and self._info_on
+        was_side = not self.cat_panel.isHidden()
+        was_info = not self.info_stack.isHidden()
+        if was_side and not side:
+            self._split_mem = self.split.sizes()
+        if was_info and not info:
+            self._rsplit_mem = self.right.sizes()
+        self.topbar.setVisible(not bare)
+        self.statusBar().setVisible(not bare)
+        self.cat_panel.setVisible(side)
+        self.list_panel.setVisible(side)
+        self.info_stack.setVisible(info)
+        self.bar.setVisible(not fs)
+        if side and not was_side and self._split_mem:
+            QTimer.singleShot(0, lambda sz=list(self._split_mem): self.split.setSizes(sz))
+        if info and not was_info and self._rsplit_mem:
+            QTimer.singleShot(0, lambda sz=list(self._rsplit_mem): self.right.setSizes(sz))
+
+    def _save_view(self) -> None:
+        self.settings.data["view"] = {"side": self._side_on, "info": self._info_on, "theater": self._theater}
+        self._dirty = True
+
     def toggle_fullscreen(self) -> None:
-        chrome = (self.topbar, self.cat_panel, self.list_panel, self.info_stack, self.bar, self.statusBar())
         if not self._fullscreen:
+            if self._mini:
+                self.toggle_mini()
             self._was_maximized = self.isMaximized()
-            self._saved_sizes = (self.split.sizes(), self.right.sizes())
-            for w in chrome:
-                w.hide()
             self._fullscreen = True
+            self._apply_chrome()
             self.showFullScreen()
             self.player.osd("Tam ekran — çıkmak için Esc ya da çift tık", 1500)
         else:
-            for w in chrome:
-                w.show()
             self._fullscreen = False
             self.showNormal()
             if self._was_maximized:
                 self.showMaximized()
-            if self._saved_sizes:
-                self.split.setSizes(self._saved_sizes[0])
-                self.right.setSizes(self._saved_sizes[1])
+            self._apply_chrome()
+            if self._pinned:
+                self._set_topmost(True)
+
+    def _leave_special(self) -> None:
+        """Panel değiştirmeden önce tam ekran / mini moddan çık."""
+        if self._fullscreen:
+            self.toggle_fullscreen()
+        if self._mini:
+            self.toggle_mini()
+
+    def toggle_side(self) -> None:
+        self._leave_special()
+        if self._theater:
+            self._theater, self._side_on = False, True
+        else:
+            self._side_on = not self._side_on
+        self._apply_chrome()
+        self._save_view()
+
+    def toggle_info(self) -> None:
+        self._leave_special()
+        if self._theater:
+            self._theater, self._info_on = False, True
+        else:
+            self._info_on = not self._info_on
+        self._apply_chrome()
+        self._save_view()
+
+    def toggle_theater(self) -> None:
+        self._leave_special()
+        self._theater = not self._theater
+        self._apply_chrome()
+        self._save_view()
+        self.player.osd("Sinema modu — geri dönmek için T" if self._theater else "Paneller açık", 1300)
+
+    def _set_topmost(self, on: bool) -> None:
+        if sys.platform == "win32":
+            # Pencereyi yeniden yaratmadan (mpv'nin gömülü penceresi bozulmasın) z-sırasını değiştir.
+            try:
+                import ctypes
+                from ctypes import wintypes
+                fn = ctypes.windll.user32.SetWindowPos
+                fn.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+                fn.restype = wintypes.BOOL
+                HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+                SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+                fn(int(self.winId()), HWND_TOPMOST if on else HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+                return
+            except Exception as e:
+                log.warning("Üstte tutma (SetWindowPos) başarısız: %s", e)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        self.show()
+
+    def _set_pinned(self, on: bool, quiet: bool = False) -> None:
+        self._pinned = on
+        self._set_topmost(on)
+        self.bar.set_pinned(on)
+        if not quiet:
+            self.player.osd("📌 Üstte tutuluyor" if on else "Üstte tutma kapalı", 1200)
+
+    def toggle_pin(self) -> None:
+        self._set_pinned(not self._pinned)
+
+    def toggle_mini(self) -> None:
+        if self._fullscreen:
+            self.toggle_fullscreen()
+        if not self._mini:
+            self._mini_saved = (self.saveGeometry(), self.isMaximized(), self._pinned)
+            self._mini = True
+            self._apply_chrome()
+            if self.isMaximized():
+                self.showNormal()
+            scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+            w = max(420, int(scr.width() * 0.26))
+            h = int(w * 9 / 16) + self.bar.height()
+            self.resize(w, h)
+            QTimer.singleShot(0, self._place_mini)
+            QTimer.singleShot(150, self._place_mini)
+            if not self._pinned:
+                self._set_pinned(True, quiet=True)
+            self.player.osd("Mini oynatıcı — çift tık ya da Esc ile geri dön", 1600)
+        else:
+            geo, was_max, was_pinned = self._mini_saved or (None, False, False)
+            self._mini = False
+            self._apply_chrome()
+            if geo is not None:
+                self.restoreGeometry(geo)
+            if was_max:
+                self.showMaximized()
+            if self._pinned != was_pinned:
+                self._set_pinned(was_pinned, quiet=True)
+
+    def _place_mini(self) -> None:
+        """Pencerenin gerçek (çerçeve dahil) boyutuna göre sağ alt köşeye, ekran içinde kalacak şekilde yerleştir."""
+        if not self._mini:
+            return
+        scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        fg = self.frameGeometry()
+        x = max(scr.left(), scr.right() - fg.width() - 24)
+        y = max(scr.top(), scr.bottom() - fg.height() - 24)
+        self.move(x, y)
+
+    def _on_double_click(self) -> None:
+        if self._mini:
+            self.toggle_mini()
+        else:
+            self.toggle_fullscreen()
+
+    def _view_menu(self, parent: QMenu | None = None) -> QMenu:
+        m = parent.addMenu("Görünüm") if parent else QMenu(self)
+        bare = self._theater or self._mini or self._fullscreen
+
+        def chk(text, on, fn):
+            a = m.addAction(text)
+            a.setCheckable(True)
+            a.setChecked(on)
+            a.triggered.connect(lambda _=False: fn())
+
+        chk("Sol paneller — kategori + liste  (Ctrl+B)", self._side_on and not bare, self.toggle_side)
+        chk("Alt bilgi paneli  (Ctrl+J)", self._info_on and not bare, self.toggle_info)
+        chk("Sinema modu — pencerede yalnız video  (T)", self._theater and not self._mini, self.toggle_theater)
+        m.addSeparator()
+        chk("Mini oynatıcı — köşede, üstte  (Ctrl+M)", self._mini, self.toggle_mini)
+        chk("Üstte tut  (P)", self._pinned, self.toggle_pin)
+        chk("Tam ekran  (F)", self._fullscreen, self.toggle_fullscreen)
+        if self.mv.tiles:
+            m.addSeparator()
+            m.addAction(f"Çoklu izlemeyi kapat ({len(self.mv.tiles)} ek kare)", self.mv.clear)
+        return m
 
     def on_escape(self) -> None:
         if self._cancel_next_episode():
             self.player.osd("Otomatik geçiş iptal edildi", 1200)
         elif self._fullscreen:
             self.toggle_fullscreen()
+        elif self._mini:
+            self.toggle_mini()
         elif self.search.text():
             self.search.clear()
 
@@ -956,7 +1241,7 @@ class MainWindow(QMainWindow):
     def _on_mpv_key(self, k: str) -> None:
         live = bool(self.player.current and self.player.current.is_live)
         actions = {
-            "MBTN_LEFT_DBL": self.toggle_fullscreen, "f": self.toggle_fullscreen, "F": self.toggle_fullscreen,
+            "MBTN_LEFT_DBL": self._on_double_click, "f": self.toggle_fullscreen, "F": self.toggle_fullscreen,
             "F11": self.toggle_fullscreen, "ENTER": self.toggle_fullscreen,
             "ESC": self.on_escape, "SPACE": self.toggle_pause,
             "UP": (lambda: self.channel_step(-1)) if live else (lambda: self._change_volume(5)),
@@ -1020,7 +1305,8 @@ class MainWindow(QMainWindow):
         m.addAction("Ekran görüntüsü  (S)", self.player.screenshot)
         m.addAction("Yeniden bağlan  (F5)", self.player.retry)
         m.addAction("Durdur", self.player.stop)
-        m.addAction("Tam ekran  (F)", self.toggle_fullscreen)
+        m.addSeparator()
+        self._view_menu(m)
         m.exec(pos)
 
     # ================================================================== öğe menüsü / favori
@@ -1033,6 +1319,14 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         if mode == "live":
             m.addAction("Oynat", lambda: self.play_live(it))
+            cap = self._mv_capacity()
+            a = m.addAction("▦ Çoklu izlemeye ekle" if cap else
+                            f"▦ Çoklu izleme (paketin {self.account.max_connections or 1} bağlantıya izin veriyor)",
+                            lambda: self.add_to_multiview(it))
+            a.setEnabled(True)
+            watched = it["id"] in self.store["watch"]
+            m.addAction("🔕 Nöbetten çıkar" if watched else "🔔 Nöbete al — program başlayınca haber ver",
+                        lambda: self._toggle_watch(it))
         elif mode == "vod":
             m.addAction("Oynat", lambda: self.play_vod(it))
             m.addAction("Baştan oynat", lambda: self.play_vod(it, from_start=True))
@@ -1043,6 +1337,8 @@ class MainWindow(QMainWindow):
         m.addAction("Favorilerden çıkar" if fav else "Favorilere ekle", lambda: self._toggle_fav(mode, it["id"]))
         if mode in ("live", "vod"):
             m.addAction("Yayın adresini kopyala", lambda: self._copy_url(mode, it))
+        if it["id"] in self.store["recent"].get(mode, []):
+            m.addAction("Son izlenenlerden kaldır", lambda: self._remove_recent(mode, it["id"]))
         if mode == "vod" and self._vod_resume(it["id"]):
             m.addAction("İzleme kaydını sil", lambda: self._clear_resume(f"vod:{it['id']}"))
         m.exec(view.viewport().mapToGlobal(pos))
@@ -1096,6 +1392,53 @@ class MainWindow(QMainWindow):
         lst.insert(0, item_id)
         del lst[40:]
         self._dirty = True
+
+    def _remove_recent(self, mode: str, item_id: str) -> None:
+        lst = self.store["recent"].get(mode, [])
+        if item_id in lst:
+            lst.remove(item_id)
+        self._dirty = True
+        self._save_if_dirty()
+        if self.cat_sel.get(mode) == CAT_RECENT:
+            self._apply_filter(mode)
+
+    def _cat_menu(self, pos) -> None:
+        it = self.cats.itemAt(pos)
+        cid = it.data(Qt.UserRole) if it else None
+        m = QMenu(self)
+        if cid == CAT_RECENT:
+            m.addAction("Son izlenenleri temizle", lambda: self._clear_history(self.mode))
+        elif cid == CAT_RESUME:
+            m.addAction("Yarım kalan filmleri temizle", lambda: self._clear_history("vod"))
+        else:
+            return
+        m.exec(self.cats.viewport().mapToGlobal(pos))
+
+    def _clear_history(self, mode: str | None) -> bool:
+        """mode=None → tüm modlar. Son izlenenleri (film için yarım kalan kayıtları da) siler."""
+        what = {"live": "Son izlenen kanallar", "vod": "Son izlenen ve yarım kalan filmler",
+                "series": "Son izlenen diziler", None: "Tüm izleme geçmişin (kanal, film, dizi)"}[mode]
+        if QMessageBox.question(self, "Geçmişi sil", f"{what} silinsin mi?\nBu işlem geri alınamaz.",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return False
+        modes = [mode] if mode else list(MODES)
+        res = self.store["resume"]
+        for md in modes:
+            self.store["recent"][md] = []
+            if md == "vod":
+                for k in [k for k in res if k.startswith("vod:")]:
+                    res.pop(k, None)
+        self._dirty = True
+        self._save_if_dirty()
+        for md in modes:
+            self.models[md].repaint_all()
+            if self.cat_sel.get(md) in (CAT_RECENT, CAT_RESUME):
+                self._apply_filter(md)
+        sel = self.selected.get("vod")
+        if "vod" in modes and sel and self.info_stack.currentWidget() is self.vod_info:
+            self.vod_info.set_resume(None)
+        self._status(f"{what} silindi", "ok")
+        return True
 
     # ================================================================== devam et
     def _vod_resume(self, vid: str):
@@ -1177,7 +1520,8 @@ class MainWindow(QMainWindow):
             self._status("Önbellek temizlendi; listeler yeniden indirilecek", "info")
 
         old_ua = self.settings.get("user_agent")
-        dlg = SettingsDialog(self.settings, self.account, on_clear_cache=clear, parent=self)
+        dlg = SettingsDialog(self.settings, self.account, on_clear_cache=clear,
+                             on_clear_history=lambda: self._clear_history(None), parent=self)
         if dlg.exec():
             if self.settings.get("user_agent") != old_ua:
                 # elle seçilen kimlik, otomatik öğrenilenin önüne geçsin
@@ -1216,15 +1560,25 @@ class MainWindow(QMainWindow):
             self.split.setSizes(w["split"])
         if w.get("rsplit"):
             self.right.setSizes(w["rsplit"])
+        self._split_mem = w.get("split")
+        self._rsplit_mem = w.get("rsplit")
+        self._apply_chrome()
 
     def closeEvent(self, e) -> None:
         if self._fullscreen:
             self.toggle_fullscreen()
+        if self._mini:
+            self.toggle_mini()
         self.settings.data["window"] = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
-            "split": self.split.sizes(),
-            "rsplit": self.right.sizes(),
+            "split": (self._split_mem if self.cat_panel.isHidden() and self._split_mem else self.split.sizes()),
+            "rsplit": (self._rsplit_mem if self.info_stack.isHidden() and self._rsplit_mem else self.right.sizes()),
         }
+        self._save_view()
+        try:
+            self.mv.clear()
+        except Exception:
+            pass
         try:
             self.player.shutdown()
         except Exception:

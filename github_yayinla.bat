@@ -35,7 +35,7 @@ if not errorlevel 1 goto :remote
 > ".git\AKIS_MSG.txt" echo Akis IPTV %VER%
 >> ".git\AKIS_MSG.txt" echo.
 >> ".git\AKIS_MSG.txt" echo Co-Authored-By: Claude Opus 5.5 ^<noreply@anthropic.com^>
->> ".git\AKIS_MSG.txt" echo Claude-Session: https://claude.ai/code/session_01SoqP8zVr8soMd7HCYRnEa1
+>> ".git\AKIS_MSG.txt" echo Claude-Session: https://claude.ai/code/session_01Axc4X9rCHtHwr9WGUBr53U
 git commit -q -F ".git\AKIS_MSG.txt"
 del ".git\AKIS_MSG.txt" >nul 2>nul
 
