@@ -1,5 +1,16 @@
 # Sürüm notları
 
+## 1.2.0 — 24 Kasım 2026
+
+### Yeni
+- **Otomatik güncelleme:** Akış açılışta GitHub'daki son sürüme bakar. Yeni sürüm varsa yeniliklerle birlikte sorar;
+  *Şimdi güncelle* deyince kurulum dosyasını indirir (ilerleme çubuğuyla), sessizce kurar ve kendini yeniden açar.
+  *Bu sürümü atla* ile o sürüm bir daha sorulmaz.
+- Ayarlar → **Güncelleme:** açılışta kontrolü açıp kapatma ve *Şimdi kontrol et* düğmesi.
+- Güncellemeden sonraki ilk açılışta "Akış X sürümüne güncellendi ✓" bildirimi.
+
+> Not: Otomatik güncelleme 1.2.0 ile geliyor; 1.1.0'dan 1.2.0'a bir kez elle (Setup.exe ile) geçmek gerekiyor.
+
 ## 1.1.0 — 24 Kasım 2026
 
 ### Yeni

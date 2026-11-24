@@ -58,8 +58,16 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Uygulama içinden otomatik güncelleme (/AKISUPDATE=1 ile sessiz kurulum): bitince Akış yeniden açılsın.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: IsAkisUpdate
 
 [Code]
+// Akış'ın kendi güncelleyicisi kurulumu /AKISUPDATE=1 ile başlatır.
+function IsAkisUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:AKISUPDATE|0}') = '1';
+end;
+
 // Kaldırırken ayarlar/önbellek (%APPDATA%\AkisIPTV) silinsin mi diye sor.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var

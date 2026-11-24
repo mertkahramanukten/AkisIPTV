@@ -19,7 +19,8 @@ FORMAT_CHOICES = [
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, account=None, on_clear_cache=None, on_clear_history=None, parent=None):
+    def __init__(self, settings: Settings, account=None, on_clear_cache=None, on_clear_history=None,
+                 on_check_update=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("Ayarlar")
@@ -93,6 +94,18 @@ class SettingsDialog(QDialog):
             f4.addRow("Formatlar", QLabel(", ".join(account.allowed_formats)))
             lay.addWidget(g4)
 
+        from .. import __version__
+        g5 = QGroupBox(f"Güncelleme — şu an {__version__}")
+        f5 = QHBoxLayout(g5)
+        self.auto_update = QCheckBox("Açılışta yeni sürüm var mı diye kontrol et")
+        self.auto_update.setChecked(bool(settings.get("auto_update", True)))
+        f5.addWidget(self.auto_update, 1)
+        upd = QPushButton("Şimdi kontrol et")
+        if on_check_update:
+            upd.clicked.connect(lambda: (self._save(), on_check_update()))
+        f5.addWidget(upd)
+        lay.addWidget(g5)
+
         row = QHBoxLayout()
         clr = QPushButton("Önbelleği temizle")
         clr.setToolTip("Kanal/film listelerini ve EPG'yi sıfırdan indirir")
@@ -126,5 +139,6 @@ class SettingsDialog(QDialog):
         s.set("full_epg", self.full_epg.isChecked(), save=False)
         s.set("show_stats", self.stats.isChecked(), save=False)
         s.set("autoplay_last", self.autoplay.isChecked(), save=False)
+        s.set("auto_update", self.auto_update.isChecked(), save=False)
         s.save()
         self.accept()

@@ -8,11 +8,13 @@ import tempfile
 import time
 
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
-                               QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter,
+                               QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QProgressDialog, QPushButton, QSplitter,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
+from .. import __version__, updater
 from ..config import Settings, project_root
 from ..images import ImageLoader
 from ..library import MODES, Library
@@ -36,6 +38,7 @@ NOUN = {"live": "kanal", "vod": "film", "series": "dizi"}
 class MainWindow(QMainWindow):
     logout_requested = Signal()
     quit_requested = Signal()
+    _upd_progress = Signal(int, int)   # güncelleme indirme ilerlemesi (arka plandan)
 
     def __init__(self, settings: Settings, client: XtreamClient, account: Account, profile: dict):
         super().__init__()
@@ -103,6 +106,13 @@ class MainWindow(QMainWindow):
                 "Parolan sunucudaki kayıtla harfi harfine aynı değildi (büyük/küçük harf); yayınlar için "
                 "düzeltildi ve kaydedildi", "ok"))
         QTimer.singleShot(5000, self._preload_others)
+        # güncelleme: yeni sürüme geçildiyse söyle; açılıştan biraz sonra sessizce kontrol et
+        if self.settings.get("last_version") != __version__:
+            if self.settings.get("last_version"):
+                QTimer.singleShot(3000, lambda: self._status(f"Akış {__version__} sürümüne güncellendi ✓", "ok"))
+            self.settings.set("last_version", __version__)
+        if self.settings.get("auto_update", True):
+            QTimer.singleShot(8000, lambda: self.check_for_update(manual=False))
 
     # ================================================================== arayüz
     def _build_ui(self) -> None:
@@ -1513,6 +1523,82 @@ class MainWindow(QMainWindow):
             txt += f" · ⟳ {st['reconnects']}"
         self.st_buf.setText(txt)
 
+    # ================================================================== otomatik güncelleme
+    def check_for_update(self, manual: bool = False) -> None:
+        if manual:
+            self._status("Güncellemeler kontrol ediliyor…", "info")
+        run_async(updater.check, on_done=lambda rel: self._on_update_checked(rel, manual),
+                  on_error=lambda m: manual and self._status(f"Güncelleme kontrol edilemedi: {m}", "warn"))
+
+    def _on_update_checked(self, rel, manual: bool) -> None:
+        if rel is None:
+            if manual:
+                self._status(f"Güncelsin — Akış {__version__} en son sürüm ✓", "ok")
+            return
+        if not manual and self.settings.get("skip_version") == rel.version:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Güncelleme var")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"<b>Akış {rel.version}</b> yayınlandı. Sende {__version__} var.")
+        notes = rel.notes if len(rel.notes) < 900 else rel.notes[:900].rsplit("\n", 1)[0] + "\n…"
+        if notes:
+            box.setInformativeText(notes)
+        self_install = updater.can_self_install() and rel.asset_url
+        go = box.addButton("Şimdi güncelle" if self_install else "İndirme sayfasını aç", QMessageBox.AcceptRole)
+        go.setObjectName("Primary")
+        later = box.addButton("Sonra", QMessageBox.RejectRole)
+        skip = box.addButton("Bu sürümü atla", QMessageBox.DestructiveRole)
+        box.setDefaultButton(go)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is skip:
+            self.settings.set("skip_version", rel.version)
+            self._status(f"{rel.version} atlandı; daha yeni sürüm çıkınca yine haber vereceğim", "info")
+        elif clicked is go:
+            if self_install:
+                self._download_update(rel)
+            else:
+                QDesktopServices.openUrl(QUrl(rel.page))
+        elif clicked is later:
+            pass
+
+    def _download_update(self, rel) -> None:
+        mb = max(1, rel.size // (1024 * 1024))
+        dlg = QProgressDialog(f"Akış {rel.version} indiriliyor… ({mb} MB)", "Vazgeç", 0, 100, self)
+        dlg.setWindowTitle("Güncelleme")
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setValue(0)
+        cancelled = {"v": False}
+        dlg.canceled.connect(lambda: cancelled.__setitem__("v", True))
+        conn = self._upd_progress.connect(lambda got, total: total and dlg.setValue(int(got * 100 / total)))
+
+        def progress(got: int, total: int) -> bool:
+            self._upd_progress.emit(got, total)  # arka plandan → arayüz
+            return not cancelled["v"]
+
+        def done(path: str) -> None:
+            self._upd_progress.disconnect(conn)
+            dlg.setLabelText("Kuruluyor… Akış birkaç saniye içinde yeniden açılacak.")
+            dlg.setCancelButton(None)
+            dlg.setValue(100)
+            try:
+                updater.install(path)
+            except Exception as e:
+                dlg.close()
+                QMessageBox.warning(self, "Güncelleme", f"Kurulum başlatılamadı: {e}")
+                return
+            QTimer.singleShot(800, self.close)  # closeEvent ayarları kaydedip uygulamayı kapatır
+
+        def failed(msg: str) -> None:
+            self._upd_progress.disconnect(conn)
+            dlg.close()
+            if not cancelled["v"]:
+                QMessageBox.warning(self, "Güncelleme", f"İndirilemedi: {msg}\n\nİstersen sürüm sayfasından elle indirebilirsin.")
+
+        run_async(updater.download, rel, progress, on_done=done, on_error=failed)
+
     # ================================================================== ayarlar / çıkış
     def open_settings(self) -> None:
         def clear():
@@ -1521,7 +1607,8 @@ class MainWindow(QMainWindow):
 
         old_ua = self.settings.get("user_agent")
         dlg = SettingsDialog(self.settings, self.account, on_clear_cache=clear,
-                             on_clear_history=lambda: self._clear_history(None), parent=self)
+                             on_clear_history=lambda: self._clear_history(None),
+                             on_check_update=lambda: self.check_for_update(manual=True), parent=self)
         if dlg.exec():
             if self.settings.get("user_agent") != old_ua:
                 # elle seçilen kimlik, otomatik öğrenilenin önüne geçsin
